@@ -1,2 +1,3 @@
-# RDMA
-RDMA sample programs
+# RDMAプログラミング入門
+工事中。
+web記事「RDMAプログラミング入門」(ただいま、執筆中)の参照用コード。
