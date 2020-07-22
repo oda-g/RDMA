@@ -13,24 +13,13 @@
 #include <arpa/inet.h>
 #include <rdma/rdma_cma.h>
 #include <rdma/rdma_verbs.h>
+#include <pthread.h>
+#include <signal.h>
 
-/* rpp: simplified version of rping.
- *
- * rpp is intended for RDMA programing using only rdma_cm and
- * rdma verbs, not using ibv_*. 
- *
- * ping/pong(same as rping) is done only once:
- * 	client sends source rkey/addr/len
- *      server receives source rkey/add/len
- *      server rdma reads "ping" data from source
- *      server sends "go ahead" on rdma read completion
- *      client sends sink rkey/addr/len
- *      server receives sink rkey/addr/len
- *      server rdma writes "pong" data to sink
- *      server sends "completion" on rdma write completion
- */
+/* rpp_h: multi client version of rpp. */
 
 static int server = -1;
+static int terminate = 0;
 
 static int debug;
 #define DEBUG_LOG if (debug) printf
@@ -210,12 +199,14 @@ rpp_rdma_recv(struct rdma_cm_id *id)
 		ct->rkey = ct->recv_buf.rkey;
 		ct->raddr = ct->recv_buf.buf;
 		ct->rlen = ct->recv_buf.size;
-		printf("remote rkey %x, addr %lx, len %d\n", ct->rkey, ct->raddr, ct->rlen);
+		printf("remote rkey %x, addr %lx, len %d\n", ct->rkey,
+			       ct->raddr, ct->rlen);
 	}
 
 	/* register for next recieve */
 	DEBUG_LOG("rdma_post_recv\n");
-	ret = rdma_post_recv(id, NULL, &ct->recv_buf, sizeof(ct->recv_buf), ct->recv_mr);
+	ret = rdma_post_recv(id, NULL, &ct->recv_buf, sizeof(ct->recv_buf),
+		       ct->recv_mr);
 	if (ret != 0) {
 		perror("rdma_post_recv");
 		return 1;
@@ -250,7 +241,8 @@ rpp_rdma_send(struct rdma_cm_id *id)
 	int ret;
 
 	DEBUG_LOG("rdma_post_send\n");
-	ret = rdma_post_send(id, NULL, &ct->send_buf, sizeof(ct->send_buf), ct->send_mr, 0);
+	ret = rdma_post_send(id, NULL, &ct->send_buf, sizeof(ct->send_buf),
+		       ct->send_mr, 0);
 	if (ret != 0) {
 		perror("rdma_post_send");
 		return 1;
@@ -259,77 +251,13 @@ rpp_rdma_send(struct rdma_cm_id *id)
 	return rpp_wait_send_comp(id);
 }
 
-static int
-run_server(struct sockaddr *addr)
+static void *
+exec_rpp(void *arg)
 {
+	struct rdma_cm_id *id = (struct rdma_cm_id *)arg;
 	int ret;
-	struct rdma_event_channel *ch;
-	struct rdma_cm_id *listen_id;
-	struct rdma_cm_event *event;
-	struct rdma_cm_id *id = NULL;
 	struct rpp_context *ct;
 
-	DEBUG_LOG("rdma_create_event_channel\n");
-	ch = rdma_create_event_channel();
-	if (ch == NULL) {
-		perror("rdma_create_event_channel");
-		return 1;
-	}
-
-	DEBUG_LOG("rdma_create_id\n");
-	ret = rdma_create_id(ch, &listen_id, NULL, RDMA_PS_TCP);
-	if (ret != 0) {
-		perror("rdma_create_id");
-		rdma_destroy_event_channel(ch);
-		return 1;
-	}
-
-	DEBUG_LOG("rdma_bind_addr\n");
-	ret = rdma_bind_addr(listen_id, addr);
-	if (ret != 0) {
-		perror("rdma_bind_addr");
-		goto out;
-	}
-	/* NOTE: rdma_bind_addr is synchronous.
-	 * rdma_get_cm_event/rdma_ack_cm_event is not necessary. */
-
-	DEBUG_LOG("rdma_listen\n");
-	ret = rdma_listen(listen_id, 1);
-	if (ret != 0) {
-		perror("rdma_listen");
-		goto out;
-	}
-
-	DEBUG_LOG("rdma_get_cm_event\n");
-	ret = rdma_get_cm_event(ch, &event);
-	if (ret != 0) {
-		perror("rdma_get_cm_event");
-		goto out;
-	}
-	if (event->status != 0) {
-		fprintf(stderr, "event status == %d\n", event->status);
-		goto out;
-	}
-	if (event->event != RDMA_CM_EVENT_CONNECT_REQUEST) {
-		fprintf(stderr, "unexpected event %d != %d(expected)\n", 
-			event->event, RDMA_CM_EVENT_CONNECT_REQUEST);
-		goto out;
-	}
-	id = event->id;
-	DEBUG_LOG("rdma_ack_cm_event\n");
-	ret = rdma_ack_cm_event(event);
-	if (ret != 0) {
-		perror("rdma_ack_cm_event");
-		goto out;
-	}
-
-	/* set new id to synchronous */
-	DEBUG_LOG("rdma_migrate_id\n");
-	ret = rdma_migrate_id(id, NULL);
-	if (ret != 0) {
-		perror("rdma_migrate_id");
-		goto out;
-	}
 	ret = rpp_init_context(id);
 	if (ret != 0) {
 		goto out;
@@ -348,7 +276,8 @@ run_server(struct sockaddr *addr)
 
 	/* regisger for first recieve */
 	DEBUG_LOG("rdma_post_recv\n");
-	ret = rdma_post_recv(id, NULL, &ct->recv_buf, sizeof(ct->recv_buf), ct->recv_mr);
+	ret = rdma_post_recv(id, NULL, &ct->recv_buf, sizeof(ct->recv_buf),
+		       ct->recv_mr);
 	if (ret != 0) {
 		perror("rdma_post_recv");
 		goto out;
@@ -369,7 +298,8 @@ run_server(struct sockaddr *addr)
 
 	/* RDMA READ */
 	DEBUG_LOG("rdma_post_read\n");
-	ret = rdma_post_read(id, NULL, ct->read_data, ct->rlen, ct->read_mr, 0, ct->raddr, ct->rkey);
+	ret = rdma_post_read(id, NULL, ct->read_data, ct->rlen, ct->read_mr,
+		       0, ct->raddr, ct->rkey);
 	if (ret != 0) {
 		perror("rdma_post_read");
 		goto out;
@@ -399,7 +329,8 @@ run_server(struct sockaddr *addr)
 
 	/* RDMA WRITE */
 	DEBUG_LOG("rdma_post_write\n");
-	ret = rdma_post_write(id, NULL, ct->write_data, ct->rlen, ct->write_mr, 0, ct->raddr, ct->rkey);
+	ret = rdma_post_write(id, NULL, ct->write_data, ct->rlen, ct->write_mr,
+		       0, ct->raddr, ct->rkey);
 	if (ret != 0) {
 		perror("rdma_post_write");
 		goto out;
@@ -417,6 +348,121 @@ run_server(struct sockaddr *addr)
 	}
 
 	printf("done\n");
+
+out:
+	rpp_free_buffers(id);
+	DEBUG_LOG("rdma_destroy_qp\n");
+	rdma_destroy_qp(id);
+	DEBUG_LOG("rdma_destroy_id id\n");
+	if (rdma_destroy_id(id) != 0) {
+		perror("rdma_destroy_id id");
+	}
+
+	return NULL;
+}
+
+static void handle_sigint(int sig)
+{
+	terminate = 1;
+}
+
+static int
+run_server(struct sockaddr *addr)
+{
+	int ret;
+	struct rdma_event_channel *ch;
+	struct rdma_cm_id *listen_id;
+	struct rdma_cm_event *event;
+	struct rdma_cm_id *id = NULL;
+	pthread_t th;
+	struct sigaction act;
+
+	DEBUG_LOG("rdma_create_event_channel\n");
+	ch = rdma_create_event_channel();
+	if (ch == NULL) {
+		perror("rdma_create_event_channel");
+		return 1;
+	}
+
+	DEBUG_LOG("rdma_create_id\n");
+	ret = rdma_create_id(ch, &listen_id, NULL, RDMA_PS_TCP);
+	if (ret != 0) {
+		perror("rdma_create_id");
+		rdma_destroy_event_channel(ch);
+		return 1;
+	}
+
+	/* NOTE: rdma_bind_addr is synchronous.
+	 * rdma_get_cm_event/rdma_ack_cm_event is not necessary. */
+	DEBUG_LOG("rdma_bind_addr\n");
+	ret = rdma_bind_addr(listen_id, addr);
+	if (ret != 0) {
+		perror("rdma_bind_addr");
+		goto out;
+	}
+
+	DEBUG_LOG("rdma_listen\n");
+	ret = rdma_listen(listen_id, 3);
+	if (ret != 0) {
+		perror("rdma_listen");
+		goto out;
+	}
+
+	/* NOTE: use sigaction(2) to wake blocked system call by EINTR
+	 * after signal catched. signal(2) implies SA_RESTART. */
+	memset(&act, 0, sizeof(act));
+	act.sa_handler = handle_sigint;
+	ret = sigaction(SIGINT, &act, NULL);
+	if (ret != 0) {
+		perror("sigaction");
+		goto out;
+	}
+
+	while (terminate == 0) {
+		DEBUG_LOG("rdma_get_cm_event\n");
+		ret = rdma_get_cm_event(ch, &event);
+		if (ret != 0) {
+			perror("rdma_get_cm_event");
+			goto out;
+		}
+		if (event->status != 0) {
+			fprintf(stderr, "event status == %d\n", event->status);
+			goto out;
+		}
+		if (event->event != RDMA_CM_EVENT_CONNECT_REQUEST) {
+			fprintf(stderr, "unexpected event %d != %d(expected)\n",
+				event->event, RDMA_CM_EVENT_CONNECT_REQUEST);
+			goto out;
+		}
+		id = event->id;
+		DEBUG_LOG("rdma_ack_cm_event\n");
+		ret = rdma_ack_cm_event(event);
+		if (ret != 0) {
+			perror("rdma_ack_cm_event");
+			goto out;
+		}
+
+		/* set new id to synchronous */
+		DEBUG_LOG("rdma_migrate_id\n");
+		ret = rdma_migrate_id(id, NULL);
+		if (ret != 0) {
+			perror("rdma_migrate_id");
+			goto out;
+		}
+
+		ret = pthread_create(&th, NULL, exec_rpp, (void *)id);
+		if (ret != 0) {
+			perror("pthread_create");
+			goto out;
+		}
+		id = NULL;
+
+		ret = pthread_detach(th);
+		if (ret != 0) {
+			perror("pthread_detach");
+			goto out;
+		}
+	}
 
 out:
 	if (id) {
@@ -484,7 +530,8 @@ run_client(struct sockaddr *addr)
 
 	/* regisger for first recieve */
 	DEBUG_LOG("rdma_post_recv\n");
-	ret = rdma_post_recv(id, NULL, &ct->recv_buf, sizeof(ct->recv_buf), ct->recv_mr);
+	ret = rdma_post_recv(id, NULL, &ct->recv_buf, sizeof(ct->recv_buf),
+		       ct->recv_mr);
 	if (ret != 0) {
 		perror("rdma_post_recv");
 		goto out;
@@ -551,7 +598,7 @@ out:
 static void
 usage(void)
 {
-	fprintf(stderr, "usage: rpp {-s|-c} [-d] server-ip-address\n");
+	fprintf(stderr, "usage: rpp_h {-s|-c} [-d] server-ip-address\n");
 }
 
 int main(int argc, char *argv[])

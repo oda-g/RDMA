@@ -427,7 +427,7 @@ out:
 static void
 usage(void)
 {
-	fprintf(stderr, "usage: rpp {-s|-c} [-d] server-ip-address\n");
+	fprintf(stderr, "usage: rpp_e {-s|-c} [-d] server-ip-address\n");
 }
 
 int main(int argc, char *argv[])
