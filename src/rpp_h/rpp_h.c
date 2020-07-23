@@ -49,34 +49,40 @@ struct rpp_context {
 	uint32_t rlen;
 };
 
-static int
-rpp_init_context(struct rdma_cm_id *id)
+static struct rpp_context *
+rpp_init_context(void)
 {
 	struct rpp_context *ct;
 
 	ct = (struct rpp_context *)malloc(sizeof(*ct));
 	if (ct == NULL) {
 		perror("malloc rpp_context");
-		return 1;
+		return NULL;
 	}
 	memset(ct, 0, sizeof(*ct));
 	ct->read_data = (char *)malloc(DATA_SIZE);
 	if (ct->read_data == NULL) {
 		perror("malloc read_data");
 		free(ct);
-		return 1;
+		return NULL;
 	}
 	ct->write_data = (char *)malloc(DATA_SIZE);
 	if (ct->write_data == NULL) {
 		perror("malloc write_data");
 		free(ct->read_data);
 		free(ct);
-		return 1;
+		return NULL;
 	}
 
-	id->context = ct;
+	return ct;
+}
 
-	return 0;
+static void
+rpp_free_context(struct rpp_context *ct)
+{
+	free(ct->read_data);
+	free(ct->write_data);
+	free(ct);
 }
 
 static int
@@ -173,6 +179,7 @@ rpp_free_buffers(struct rdma_cm_id *id)
 			perror("rdma_rereg_mr write_mr");
 		}
 	}
+	rpp_free_context(ct);
 }
 
 static int
@@ -258,11 +265,11 @@ exec_rpp(void *arg)
 	int ret;
 	struct rpp_context *ct;
 
-	ret = rpp_init_context(id);
-	if (ret != 0) {
+	ct = rpp_init_context();
+	if (ct == NULL) {
 		goto out;
 	}
-	ct = id->context;
+	id->context = ct;
 
 	ret = rpp_create_qp(id);
 	if (ret != 0) {
@@ -492,15 +499,16 @@ run_client(struct sockaddr *addr)
 	struct ibv_wc wc;
 	struct rpp_context *ct;
 
-	DEBUG_LOG("rdma_create_id\n");
-	ret = rdma_create_id(NULL, &id, NULL, RDMA_PS_TCP);
-	if (ret != 0) {
-		perror("rdma_create_id");
+	ct = rpp_init_context();
+	if (ct == NULL) {
 		return 1;
 	}
-	ret = rpp_init_context(id);
+	DEBUG_LOG("rdma_create_id\n");
+	ret = rdma_create_id(NULL, &id, ct, RDMA_PS_TCP);
 	if (ret != 0) {
-		goto out;
+		perror("rdma_create_id");
+		rpp_free_context(ct);
+		return 1;
 	}
 
 	DEBUG_LOG("rdma_resolve_addr\n");
@@ -526,7 +534,6 @@ run_client(struct sockaddr *addr)
 	if (ret != 0) {
 		goto out;
 	}
-	ct = id->context;
 
 	/* regisger for first recieve */
 	DEBUG_LOG("rdma_post_recv\n");
