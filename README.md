@@ -18,7 +18,7 @@ $ sudo apt install gcc make
 ```
 usage: rpp {-s|-c} [-d] server-ip-address
 ```
-まずは、passive側を起動。
+まずは、passive側を起動。(下記IPアドレスは一例)
 ```
 $ rpp -s 192.168.0.11
 ```
