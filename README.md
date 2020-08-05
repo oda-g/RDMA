@@ -1,7 +1,6 @@
 # RDMAプログラミング入門
 
-web記事[RDMAプログラミング入門](https://valinux.hatenablog.com/draft/Apf2H1AfdqNEHcfPePnhyHUqYnA)の参照用コードです。
-(近日公開予定。公開時、URL設定)
+web記事[RDMAプログラミング入門](https://valinux.hatenablog.com/entry/20200806)の参照用コードです。
 
 プログラムの内容については、web記事を参照ください。
 
